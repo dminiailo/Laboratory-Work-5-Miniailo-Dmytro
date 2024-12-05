@@ -1,0 +1,110 @@
+﻿using static System.Formats.Asn1.AsnWriter;
+using System.Net;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Threading;
+
+import scapy.all as scapy
+import os
+import re
+from collections import Counter
+import subprocess
+
+# Network Sniffer and Analyzer
+def sniff_packets(interface):
+    print(f"[INFO] Starting packet sniffing on {interface}")
+    scapy.sniff(iface =interface, store = False, prn = analyze_packet)
+
+suspicious_ips = Counter()
+THRESHOLD = 100  # Define a threshold for anomalies
+
+def analyze_packet(packet):
+    if packet.haslayer(scapy.IP):
+        src_ip = packet[scapy.IP].src
+        suspicious_ips[src_ip] += 1
+
+        # Detect port scanning
+        if packet.haslayer(scapy.TCP) and packet[scapy.TCP].flags == "S":
+            print(f"[WARNING] Potential port scan detected from {src_ip}")
+
+        # Detect anomalies
+        if suspicious_ips[src_ip] > THRESHOLD:
+            print(f"[ALERT] Suspicious activity detected from {src_ip} ({suspicious_ips[src_ip]} packets)")
+            notify_admin(f"Suspicious activity from {src_ip}")
+
+# Notification System
+def notify_admin(message):
+    print(f"[NOTIFICATION] {message}")
+    # Add your email/SMS integration here if needed
+
+# Firewall Configuration
+def block_ip(ip_address):
+    print(f"[INFO] Blocking IP {ip_address}")
+    os.system(f"iptables -A INPUT -s {ip_address} -j DROP")
+
+def allow_only_trusted(ips):
+    print("[INFO] Allowing traffic only from trusted IPs")
+    os.system("iptables -P INPUT DROP")  # Drop all incoming traffic
+    for ip in ips:
+        os.system(f"iptables -A INPUT -s {ip} -j ACCEPT")
+
+def limit_ports(ports):
+    print(f"[INFO] Limiting access to ports: {ports}")
+    for port in ports:
+        os.system(f"iptables -A INPUT -p tcp --dport {port} -j ACCEPT")
+
+# Network Scanner
+def scan_network(ip_range, ports):
+    print(f"[INFO] Scanning network range {ip_range} for ports {ports}")
+    open_ports = { }
+
+for ip in scapy.IPNetwork(ip_range):
+
+    open_ports[ip] = []
+        for port in ports:
+            result = scapy.sr1(
+                scapy.IP(dst = str(ip)) / scapy.TCP(dport = port, flags = "S"),
+                timeout = 1,
+                verbose = False
+            )
+            if result and result.haslayer(scapy.TCP) and result[scapy.TCP].flags == 0x12:
+                open_ports[ip].append(port)
+                print(f"[INFO] {ip}:{port} is open")
+
+                # Send RST to close the open connection
+                scapy.send(scapy.IP(dst = str(ip)) / scapy.TCP(dport = port, flags = "R"), verbose = False)
+
+    return open_ports
+
+def detect_services(ip, port):
+    try:
+        result = subprocess.check_output(["nmap", "-sV", "-p", str(port), str(ip)], stderr = subprocess.DEVNULL)
+        service_info = re.search(r"\d+/tcp\s+open\s+(\S+).*", result.decode("utf-8"))
+        if service_info:
+            return service_info.group(1)
+    except Exception as e:
+        print(f"[ERROR] Could not detect service on {ip}:{port} - {e}")
+    return "Unknown"
+
+if __name__ == "__main__":
+    interface = "eth0"  # Adjust as needed
+
+    # Start Sniffing
+    sniff_packets(interface)
+
+    # Example of blocking IP
+    # block_ip("192.168.1.100")
+
+    # Example of allowing only trusted IPs
+    # trusted_ips = ["192.168.1.1", "192.168.1.2"]
+    # allow_only_trusted(trusted_ips)
+
+    # Example of limiting ports
+    # limit_ports([22, 80, 443])
+
+    # Example of scanning a network
+    # results = scan_network("192.168.1.0/24", [22, 80, 443])
+    # for ip, ports in results.items():
+    #     for port in ports:
+    #         service = detect_services(ip, port)
+    #         print(f"[INFO] {ip}:{port} - {service}")
